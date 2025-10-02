@@ -1,0 +1,172 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+
+st.set_page_config(layout="wide", page_title="GST CFO Dashboard")
+
+# --------- Utilities ---------
+def random_gstin():
+    return "".join([str(np.random.randint(0, 10)) for _ in range(15)])
+
+def generate_mock_data(seed=42):
+    np.random.seed(seed)
+    months = pd.date_range("2024-04-01", periods=12, freq="MS")
+    customers = [("ACME Traders", "MH"), ("GujCommerce", "GJ"), ("SouthSup", "KA"), ("NorthMart", "UP")]
+    suppliers = [("SteelSource", "GJ"), ("PackCo", "MH"), ("ElectroHub", "KA")]
+    products = [("P1001","Fasteners"),("P1002","Coils"),("P1003","Boxes"),("P1004","Boards")]
+    gst_rates = [0.05, 0.12, 0.18]
+
+    sales, purchases = [], []
+
+    for dt in months:
+        # sales
+        for cust, state in customers:
+            prod = products[np.random.randint(len(products))]
+            qty = np.random.randint(1,50)
+            price = round(np.random.uniform(500,5000),2)
+            net = qty*price
+            rate = np.random.choice(gst_rates)
+            gst = round(net*rate,2)
+            sales.append({
+                "date": dt,
+                "party": cust,
+                "gstin": random_gstin(),
+                "state": state,
+                "product": prod[1],
+                "net": net,
+                "gst": gst,
+                "gross": net+gst
+            })
+        # purchases
+        for sup, state in suppliers:
+            prod = products[np.random.randint(len(products))]
+            qty = np.random.randint(10,80)
+            price = round(np.random.uniform(200,3000),2)
+            net = qty*price
+            rate = np.random.choice(gst_rates)
+            gst = round(net*rate,2)
+            purchases.append({
+                "date": dt,
+                "party": sup,
+                "gstin": random_gstin(),
+                "state": state,
+                "product": prod[1],
+                "net": net,
+                "gst": gst,
+                "gross": net+gst
+            })
+
+    return pd.DataFrame(sales), pd.DataFrame(purchases)
+
+# --------- Sidebar File Upload ---------
+st.sidebar.header("📂 Data Upload")
+sales_file = st.sidebar.file_uploader("Upload Sales Data", type=["csv","xlsx"])
+purch_file = st.sidebar.file_uploader("Upload Purchase Data", type=["csv","xlsx"])
+
+if sales_file and purch_file:
+    if sales_file.name.endswith("csv"):
+        sales_df = pd.read_csv(sales_file)
+    else:
+        sales_df = pd.read_excel(sales_file)
+
+    if purch_file.name.endswith("csv"):
+        purchases_df = pd.read_csv(purch_file)
+    else:
+        purchases_df = pd.read_excel(purch_file)
+else:
+    st.sidebar.warning("⚠️ No files uploaded yet. Showing mock demo data.")
+    sales_df, purchases_df = generate_mock_data()
+
+# --------- Sidebar Navigation ---------
+tabs = ["Dashboard","Sales","Purchases","Debtors","Creditors","Products","Liability","Cashflow"]
+choice = st.sidebar.radio("📊 Select Tab", tabs)
+
+# --------- Dashboard ---------
+if choice=="Dashboard":
+    st.title("GST CFO Dashboard - Executive Summary")
+    col1,col2,col3 = st.columns(3)
+    col1.metric("GST Collected", f"₹{sales_df['gst'].sum():,.0f}")
+    col2.metric("GST ITC Available", f"₹{purchases_df['gst'].sum():,.0f}")
+    col3.metric("Net GST Payable", f"₹{sales_df['gst'].sum()-purchases_df['gst'].sum():,.0f}")
+
+    # line chart
+    monthly = sales_df.groupby(sales_df["date"].astype(str))[["gst"]].sum().reset_index()
+    fig = px.line(monthly, x="date", y="gst", markers=True, title="Monthly GST Liability")
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------- Sales ---------
+elif choice=="Sales":
+    st.header("Sales Analysis")
+    fig1 = px.bar(sales_df, x="party", y="gst", color="state", title="GST by Customer")
+    st.plotly_chart(fig1, use_container_width=True)
+
+    fig2 = px.treemap(sales_df, path=["state","party","product"], values="gst", title="Sales GST Treemap")
+    st.plotly_chart(fig2, use_container_width=True)
+
+# --------- Purchases ---------
+elif choice=="Purchases":
+    st.header("Purchase Analysis")
+    fig1 = px.bar(purchases_df, x="party", y="gst", color="state", title="GST ITC by Supplier")
+    st.plotly_chart(fig1, use_container_width=True)
+
+    fig2 = px.sunburst(purchases_df, path=["state","party","product"], values="gst", title="Supplier-Product GST Split")
+    st.plotly_chart(fig2, use_container_width=True)
+
+# --------- Debtors ---------
+elif choice=="Debtors":
+    st.header("Debtor Analysis")
+    party_summary = sales_df.groupby("party")[["net","gst","gross"]].sum().reset_index()
+    fig = px.scatter(party_summary, x="net", y="gst", size="gross", color="party", title="Debtors - Net vs GST")
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------- Creditors ---------
+elif choice=="Creditors":
+    st.header("Creditor Analysis")
+    party_summary = purchases_df.groupby("party")[["net","gst","gross"]].sum().reset_index()
+    fig = px.scatter(party_summary, x="net", y="gst", size="gross", color="party", title="Creditors - Net vs ITC")
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------- Products ---------
+elif choice=="Products":
+    st.header("Product Analysis")
+    prod_summary = sales_df.groupby("product")[["net","gst","gross"]].sum().reset_index()
+    fig = px.bar(prod_summary, x="product", y=["net","gst"], title="Product-wise Net & GST")
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------- Liability ---------
+elif choice=="Liability":
+    st.header("GST Liability Overview")
+    monthly = pd.merge(
+        sales_df.groupby(sales_df["date"].dt.to_period("M"))["gst"].sum(),
+        purchases_df.groupby(purchases_df["date"].dt.to_period("M"))["gst"].sum(),
+        left_index=True, right_index=True, suffixes=("_sales","_purch")
+    ).reset_index()
+    monthly["net_payable"] = monthly["gst_sales"] - monthly["gst_purch"]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=monthly["date"].astype(str), y=monthly["gst_sales"], name="Output GST"))
+    fig.add_trace(go.Bar(x=monthly["date"].astype(str), y=monthly["gst_purch"], name="Input GST"))
+    fig.add_trace(go.Scatter(x=monthly["date"].astype(str), y=monthly["net_payable"], mode="lines+markers", name="Net Payable"))
+    fig.update_layout(barmode="group", title="Monthly GST Liability")
+    st.plotly_chart(fig, use_container_width=True)
+
+# --------- Cashflow ---------
+elif choice=="Cashflow":
+    st.header("GST Impact on Cashflows")
+    total_sales = sales_df["gross"].sum()
+    total_purchases = purchases_df["gross"].sum()
+    gst_out = sales_df["gst"].sum()
+    gst_in = purchases_df["gst"].sum()
+
+    labels = ["Sales Inflow","Purchases Outflow","GST Collected","GST ITC"]
+    values = [total_sales, -total_purchases, -gst_out, gst_in]
+    fig = go.Figure(go.Waterfall(
+        name="Cashflow",
+        orientation="v",
+        x=labels,
+        y=values,
+        connector={"line":{"color":"darkblue"}}
+    ))
+    st.plotly_chart(fig, use_container_width=True)
